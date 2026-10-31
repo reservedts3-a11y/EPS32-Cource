@@ -1,84 +1,63 @@
-
 #include <Arduino.h>
-#include <stdint.h>
 
+constexpr uint8_t BUTTON_PIN = 18;
 
-enum class LedState : uint8_t {
-    Off,
-    On
-};
+volatile uint32_t interruptCount = 0;
+volatile uint32_t firstInterruptUs = 0;
+volatile bool eventPending = false;
 
-struct AppConfig {
-    static constexpr uint8_t LED_PIN = 2;
-    static constexpr uint32_t BLINK_INTERVAL_MS = 500U;
-};
+void IRAM_ATTR buttonISR() {
+    const uint32_t now = micros();
 
-class Led {
-public:
-    explicit Led(uint8_t pin)
-        : pin_(pin) {}
+    interruptCount++;
 
-    void init() {
-        pinMode(pin_, OUTPUT);
-        set(LedState::Off);
+    // Запам'ятовуємо час першої події
+    // до того, як loop() забере прапорець.
+    if (!eventPending) {
+        firstInterruptUs = now;
+        eventPending = true;
     }
-
-    void set(LedState state) {
-        digitalWrite(
-            pin_,
-            state == LedState::On ? HIGH : LOW
-        );
-    }
-
-private:
-    uint8_t pin_;
-};
-
-class BlinkController {
-public:
-    BlinkController()
-        : led_(AppConfig::LED_PIN),
-          state_(LedState::Off),
-          lastToggleMs_(0U) {}
-
-    void init() {
-        led_.init();
-        lastToggleMs_ = millis();
-    }
-
-    void update() {
-        const uint32_t now =
-            static_cast<uint32_t>(millis());
-
-        if (now - lastToggleMs_
-            >= AppConfig::BLINK_INTERVAL_MS) {
-
-            lastToggleMs_ = now;
-
-            state_ = (state_ == LedState::On)
-                ? LedState::Off
-                : LedState::On;
-
-            led_.set(state_);
-        }
-    }
-
-private:
-    Led led_;
-    LedState state_;
-    uint32_t lastToggleMs_;
-};
-
-// Єдиний екземпляр контролера зі статичним часом життя.
-BlinkController& controller() {
-    static BlinkController instance;
-    return instance;
 }
 
 void setup() {
-    controller().init();
+    Serial.begin(115200);
+
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+    attachInterrupt(
+        digitalPinToInterrupt(BUTTON_PIN),
+        buttonISR,
+        FALLING
+    );
 }
 
 void loop() {
-    controller().update();
+    bool hasEvent;
+    uint32_t eventUs;
+    uint32_t count;
+
+    // Безпечне копіювання спільних змінних
+    noInterrupts();
+
+    hasEvent = eventPending;
+    eventUs = firstInterruptUs;
+    count = interruptCount;
+    eventPending = false;
+
+    interrupts();
+
+    if (hasEvent) {
+        const uint32_t handledUs = micros();
+        const uint32_t latencyUs = handledUs - eventUs;
+
+        Serial.print("Interrupt count: ");
+        Serial.println(count);
+
+        Serial.print("Latency: ");
+        Serial.print(latencyUs);
+        Serial.print(" us (");
+
+        Serial.print(latencyUs / 1000.0);
+        Serial.println(" ms)");
+    }
 }
