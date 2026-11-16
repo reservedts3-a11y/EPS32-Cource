@@ -1,84 +1,57 @@
-
 #include <Arduino.h>
-#include <stdint.h>
+#include <esp_task_wdt.h>
 
+#define GPIO_IN 34  // photoresistor
+#define GPIO_OUT 14 // LED
 
-enum class LedState : uint8_t {
-    Off,
-    On
-};
+const int THRESHOLD = 2000; // dark/light threshold
+const int HYSTERESIS = 100; // prevents LED flicker near the threshold
+const unsigned long READ_INTERVAL = 1000;
 
-struct AppConfig {
-    static constexpr uint8_t LED_PIN = 2;
-    static constexpr uint32_t BLINK_INTERVAL_MS = 500U;
-};
+unsigned long lastRead = 0;
+bool ledOn = false;
 
-class Led {
-public:
-    explicit Led(uint8_t pin)
-        : pin_(pin) {}
+void setup()
+{
+    Serial.begin(115200);
+    pinMode(GPIO_OUT, OUTPUT);
 
-    void init() {
-        pinMode(pin_, OUTPUT);
-        set(LedState::Off);
-    }
-
-    void set(LedState state) {
-        digitalWrite(
-            pin_,
-            state == LedState::On ? HIGH : LOW
-        );
-    }
-
-private:
-    uint8_t pin_;
-};
-
-class BlinkController {
-public:
-    BlinkController()
-        : led_(AppConfig::LED_PIN),
-          state_(LedState::Off),
-          lastToggleMs_(0U) {}
-
-    void init() {
-        led_.init();
-        lastToggleMs_ = millis();
-    }
-
-    void update() {
-        const uint32_t now =
-            static_cast<uint32_t>(millis());
-
-        if (now - lastToggleMs_
-            >= AppConfig::BLINK_INTERVAL_MS) {
-
-            lastToggleMs_ = now;
-
-            state_ = (state_ == LedState::On)
-                ? LedState::Off
-                : LedState::On;
-
-            led_.set(state_);
-        }
-    }
-
-private:
-    Led led_;
-    LedState state_;
-    uint32_t lastToggleMs_;
-};
-
-// Єдиний екземпляр контролера зі статичним часом життя.
-BlinkController& controller() {
-    static BlinkController instance;
-    return instance;
+    // Watchdog: reboot if loop() does not respond for 5 seconds
+    esp_task_wdt_init(5, true);
+    esp_task_wdt_add(NULL);
 }
 
-void setup() {
-    controller().init();
-}
+void loop()
+{
+    esp_task_wdt_reset(); // "I'm alive"
 
-void loop() {
-    controller().update();
+    if (millis() - lastRead < READ_INTERVAL)
+    {
+        return;
+    }
+    lastRead = millis();
+
+    int value = analogRead(GPIO_IN);
+    delay(100); // small delay to stabilize the reading
+
+    // Sensor check: 0 or 4095 most likely means a broken wire or short circuit
+    if (value <= 10 || value >= 4085)
+    {
+        Serial.printf("ПОМИЛКА датчика: %d\n", value);
+        digitalWrite(GPIO_OUT, LOW); // safe mode
+        return;
+    }
+
+    // Hysteresis: turn on below 2000, turn off above 2200
+    if (!ledOn && value < THRESHOLD - HYSTERESIS)
+    {
+        ledOn = true;
+    }
+    else if (ledOn && value > THRESHOLD + HYSTERESIS)
+    {
+        ledOn = false;
+    }
+    digitalWrite(GPIO_OUT, !ledOn ? HIGH : LOW);
+
+    Serial.printf("light: %d, LED: %s\n", value, ledOn ? "ON" : "OFF");
 }
